@@ -60,6 +60,13 @@ class FGInputs:
         ).coerce()
 
 
+@dataclass
+class FacadeGenerationResult:
+    facades: list[Facade]
+    parapets: list[geo.Brep]
+    roof_cores: list[geo.Brep]
+
+
 ####
 # input : 3D Building  Brep, Facade Parameters
 # output : Building Facade Breps
@@ -100,10 +107,12 @@ class FacadeGenerator:
 
     def _get_building_height(self) -> float:
         # 건물의 높이를 계산하는 로직을 구현합니다.
-        bbox = self.building_brep.GetBoundingBox(True)
-        return bbox.Max.Z - bbox.Min.Z
+        self.building_bbox = self.building_brep.GetBoundingBox(True)
+        self.base_z = self.building_bbox.Min.Z
+        self.top_z = self.building_bbox.Max.Z
+        return self.top_z - self.base_z
 
-    def generate(self, pattern_type: int = 1) -> list[Facade]:
+    def generate(self, pattern_type: int = 1) -> FacadeGenerationResult:
         if self.slab_height >= self.floor_height:
             raise ValueError(
                 f"slab_height ({self.slab_height}) must be less than floor_height ({self.floor_height})"
@@ -130,7 +139,7 @@ class FacadeGenerator:
             bottom_obj = facade_plan.BottomFacadeTypeRegistry.create_facade_type(
                 bottom_type,
                 self.pattern_length,
-                self.pattern_depth,
+                self.pattern_depth * 0.5,
                 self.pattern_ratio,
                 self.building_curve,
             )
@@ -148,25 +157,31 @@ class FacadeGenerator:
                 building_segs, bottom_obj, facade_height
             )
 
-        # bake_block: 블록 정의 1개 생성 후 층별 인스턴스 배치
+        floor_facades: list[Facade] = []
         if self.bake_block:
             self._bake_facade_blocks(base_facade)
-            return []
+        else:
+            for floor in range(self.building_floor):
+                base_z = floor * self.floor_height
+                if base_z >= self.building_height:
+                    break
+                template = base_facade
+                if bottom_base_facade and floor < bottom_floor_span:
+                    template = bottom_base_facade
+                moved = self._move_facade(template, geo.Vector3d(0, 0, base_z))
+                floor_facades.append(moved)
 
-        # 기준층 결과를 층수만큼 복제하여 Z만 이동 배치 (층별 Facade 리스트 반환)
-        floor_facades: list[Facade] = []
-        for floor in range(self.building_floor):
-            base_z = floor * self.floor_height
-            if base_z >= self.building_height:
-                break
-            template = base_facade
-            if bottom_base_facade and floor < bottom_floor_span:
-                template = bottom_base_facade
-            moved = self._move_facade(template, geo.Vector3d(0, 0, base_z))
-            floor_facades.append(moved)
-
-        # 디버그 출력은 라이브러리 모듈에서는 생략
-        return floor_facades
+        parapets = self._create_parapet()
+        roof_cores = self._create_rooftop_core()
+        if self.bake_block:
+            self._bake_rooftop_blocks(parapets, roof_cores)
+            parapets = []
+            roof_cores = []
+        return FacadeGenerationResult(
+            facades=floor_facades,
+            parapets=parapets,
+            roof_cores=roof_cores,
+        )
 
     # ===== Blocks =====
     def _bake_facade_blocks(self, base_facade: Facade) -> None:
@@ -382,3 +397,161 @@ class FacadeGenerator:
                 slab_brep_final, geo.Vector3d.ZAxis * base_z
             )
         return slab_brep_final
+
+    def _create_parapet(self) -> list[geo.Brep]:
+        """최상층 파라펫 생성"""
+        if self.building_height <= 0:
+            return []
+        thickness = 1.0
+        parapet_height = 1.0
+        inner_candidates = utils.offset_regions_inward(self.building_curve, thickness)
+        if not inner_candidates:
+            return []
+
+        inner_curve = max(inner_candidates, key=lambda c: c.GetLength())
+
+        outer_curve = self.building_curve.DuplicateCurve()
+        inner_curve = inner_curve.DuplicateCurve()
+        inner_curve.Reverse()
+
+        roof_lift = self.building_height
+        move_vec = geo.Vector3d(0, 0, roof_lift)
+        outer_curve.Translate(move_vec)
+        inner_curve.Translate(move_vec)
+
+        planar = geo.Brep.CreatePlanarBreps([outer_curve, inner_curve])
+        if not planar:
+            return []
+
+        face = planar[0].Faces[0]
+        start_pt = outer_curve.PointAtStart
+        end_pt = start_pt + geo.Vector3d(0, 0, parapet_height)
+        path = geo.LineCurve(start_pt, end_pt)
+        parapet_brep = face.CreateExtrusion(path, True)
+        if not parapet_brep:
+            return []
+
+        tol = self._get_model_tolerance()
+        parapet_brep.CapPlanarHoles(tol)
+        return [parapet_brep]
+
+    def _create_rooftop_core(self) -> list[geo.Brep]:
+        """옥상 코어(기계실 등) 생성"""
+        if self.building_height <= 0:
+            return []
+
+        core_candidates = utils.offset_regions_inward(self.building_curve, 12.0)
+        if not core_candidates:
+            return []
+        core_curve_base = max(core_candidates, key=lambda c: c.GetLength())
+        core_height = 3.0
+        roof_lift = self.building_height
+        core_curve = core_curve_base.DuplicateCurve()
+        core_curve.Translate(geo.Vector3d(0, 0, roof_lift))
+
+        extr = geo.Extrusion.Create(core_curve, -core_height, True)
+        if not extr:
+            return []
+
+        brep = extr.ToBrep()
+        return [brep] if brep else []
+
+    def _bake_rooftop_blocks(
+        self, parapets: list[geo.Brep], roof_cores: list[geo.Brep]
+    ) -> None:
+        if not parapets and not roof_cores:
+            return
+
+        try:
+            prev_doc = sc.doc
+        except Exception:
+            prev_doc = None
+        sc.doc = Rhino.RhinoDoc.ActiveDoc
+
+        try:
+            doc = sc.doc
+            _, parapet_idx, core_idx = self._ensure_rooftop_layers(doc)
+            geom, attrs = self._rooftop_geom_attrs(
+                parapets, roof_cores, parapet_idx, core_idx
+            )
+            if not geom:
+                return
+
+            block_name = self._next_block_name(doc, base="rooftop")
+            base_pt = geo.Point3d.Origin
+            idefs = doc.InstanceDefinitions
+            def_index = idefs.Add(block_name, "Rooftop Elements", base_pt, geom, attrs)
+            if def_index < 0:
+                return
+
+            xform = geo.Transform.Identity
+            doc.Objects.AddInstanceObject(def_index, xform)
+        finally:
+            if prev_doc is not None:
+                sc.doc = prev_doc
+
+    def _ensure_rooftop_layers(self, doc) -> tuple[int, int, int]:
+        import Rhino.DocObjects as rdo
+
+        def find_layer(name: str, parent_id=None) -> int:
+            for i in range(doc.Layers.Count):
+                layer = doc.Layers[i]
+                if layer.Name == name and (
+                    parent_id is None or layer.ParentLayerId == parent_id
+                ):
+                    return i
+            return -1
+
+        rooftop_idx = find_layer("Rooftop")
+        if rooftop_idx < 0:
+            lay = rdo.Layer()
+            lay.Name = "Rooftop"
+            rooftop_idx = doc.Layers.Add(lay)
+        rooftop_id = doc.Layers[rooftop_idx].Id
+
+        def ensure_child(name: str) -> int:
+            idx = find_layer(name, rooftop_id)
+            if idx >= 0:
+                return idx
+            child = rdo.Layer()
+            child.Name = name
+            child.ParentLayerId = rooftop_id
+            return doc.Layers.Add(child)
+
+        core_idx = ensure_child("루프탑코어")
+        parapet_idx = ensure_child("파라펫")
+        return rooftop_idx, parapet_idx, core_idx
+
+    def _rooftop_geom_attrs(
+        self,
+        parapets: list[geo.Brep],
+        roof_cores: list[geo.Brep],
+        parapet_layer_idx: int,
+        core_layer_idx: int,
+    ) -> tuple[list[geo.GeometryBase], list[Rhino.DocObjects.ObjectAttributes]]:
+        import Rhino.DocObjects as rdo
+
+        geom: list[geo.GeometryBase] = []
+        attrs: list[rdo.ObjectAttributes] = []
+
+        def add_many(items, layer_idx):
+            for b in items or []:
+                if not b:
+                    continue
+                geom.append(b)
+                attr = rdo.ObjectAttributes()
+                attr.LayerIndex = layer_idx
+                attrs.append(attr)
+
+        add_many(parapets, parapet_layer_idx)
+        add_many(roof_cores, core_layer_idx)
+        return geom, attrs
+
+    def _get_model_tolerance(self) -> float:
+        try:
+            doc = Rhino.RhinoDoc.ActiveDoc
+            if doc is not None:
+                return doc.ModelAbsoluteTolerance
+        except Exception:
+            pass
+        return 0.01

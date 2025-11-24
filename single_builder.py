@@ -32,7 +32,9 @@ if __name__ == "__main__":
     inputs = fg.FGInputs.from_globals(globals())
     generator = fg.FacadeGenerator(inputs)
     _pattern_type = int(globals().get("pattern_type", 1))
-    facades = generator.generate(_pattern_type)
+    result = generator.generate(_pattern_type)
 
     # Outputs for GH
-    glasses, walls, frames, slabs = _flatten(facades)
+    glasses, walls, frames, slabs = _flatten(result.facades)
+    parapets = result.parapets
+    roof_cores = result.roof_cores

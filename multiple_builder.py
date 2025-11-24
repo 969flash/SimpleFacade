@@ -126,7 +126,6 @@ if __name__ == "__main__" or "building_breps" in globals():
     base = fg.FGInputs.from_globals(globals())
     variation_factor = float(globals().get("variation_factor", 0.0))
     pattern_types = globals().get("pattern_types", None)
-    slab_height = globals().get("slab_height", None)
 
     # 빌딩별 FGInputs 확장 및 패턴 타입 정규화
     per_bldg_inputs = FGInputsExpander.expand(
@@ -136,9 +135,27 @@ if __name__ == "__main__" or "building_breps" in globals():
 
     # 실행 및 결과 수집
     facades: List[Facade] = []
+    parapets_all: List[geo.Brep] = []
+    roof_cores_all: List[geo.Brep] = []
     for inp, ptype in zip(per_bldg_inputs, pattern_types):
         gen = fg.FacadeGenerator(inp)
-        facades.extend(gen.generate(int(ptype)))
+        result = gen.generate(int(ptype))
+        facades.extend(result.facades)
+        parapets_all.extend(result.parapets or [])
+        roof_cores_all.extend(result.roof_cores or [])
 
     # GH 출력 변수 설정
     glasses, walls, frames, slabs = _flatten(facades)
+    print("Generated {} facades.".format(len(facades)))
+    print(
+        "Generated {} glasses, {} walls, {} frames, {} slabs.".format(
+            len(glasses), len(walls), len(frames), len(slabs)
+        )
+    )
+    print(
+        "Generated {} parapets, {} roof cores.".format(
+            len(parapets_all), len(roof_cores_all)
+        )
+    )
+    parapets = parapets_all
+    roof_cores = roof_cores_all
