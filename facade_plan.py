@@ -545,6 +545,136 @@ class FacadeType10(BaseFacadeType):
         )
 
 
+class BottomFacadeType1(BaseFacadeType):
+    """저층부 파사드 타입 1 - 두꺼운 프레임과 긴 벽체"""
+
+    def generate(self, seg: geo.Curve, extrude_height: float) -> Optional[Facade]:
+        pts_from_seg = utils.get_pts_by_length(
+            seg, self.pattern_length * 0.9, include_start=True
+        )
+        if not pts_from_seg or len(pts_from_seg) < 2:
+            return None
+
+        glass_segs: list[geo.Curve] = []
+        wall_segs: list[geo.Curve] = []
+        frame_segs: list[geo.Curve] = []
+
+        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
+            vector = utils.get_vector_from_pts(pt, next_pt)
+            if hasattr(vector, "IsZero") and vector.IsZero:
+                continue
+            vector.Unitize()
+
+            glass_len = self.pattern_length * 0.3
+            glass_pt = pt + vector * glass_len
+            glass_segs.append(geo.LineCurve(pt, glass_pt))
+
+            wall_segs.append(geo.LineCurve(glass_pt, next_pt))
+
+            out_vec = utils.get_outside_perp_vec_from_pt(glass_pt, self.building_curve)
+            if out_vec is not None:
+                frame_depth = self.pattern_depth * 1.3
+                frame_end = glass_pt + out_vec * frame_depth
+                frame_segs.append(geo.LineCurve(glass_pt, frame_end))
+
+        if len(pts_from_seg) >= 2:
+            wall_segs.append(geo.LineCurve(pts_from_seg[-1], seg.PointAtEnd))
+
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
+
+
+class BottomFacadeType2(BaseFacadeType):
+    """저층부 파사드 타입 2 - 벽체 비중이 높은 필라 구조"""
+
+    def generate(self, seg: geo.Curve, extrude_height: float) -> Optional[Facade]:
+        pts_from_seg = utils.get_pts_by_length(
+            seg, self.pattern_length, include_start=True
+        )
+        if not pts_from_seg or len(pts_from_seg) < 2:
+            return None
+
+        glass_segs: list[geo.Curve] = []
+        wall_segs: list[geo.Curve] = []
+        frame_segs: list[geo.Curve] = []
+
+        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
+            vector = utils.get_vector_from_pts(pt, next_pt)
+            if hasattr(vector, "IsZero") and vector.IsZero:
+                continue
+            vector.Unitize()
+
+            first_div = pt + vector * (self.pattern_length * 0.2)
+            second_div = pt + vector * (self.pattern_length * 0.8)
+
+            glass_segs.append(geo.LineCurve(pt, first_div))
+            wall_segs.append(geo.LineCurve(first_div, second_div))
+            wall_segs.append(geo.LineCurve(second_div, next_pt))
+
+            out_vec = utils.get_outside_perp_vec_from_pt(
+                second_div, self.building_curve
+            )
+            if out_vec is not None:
+                frame_depth = self.pattern_depth * 1.1
+                frame_start = first_div - out_vec * (self.pattern_depth * 0.3)
+                frame_end = second_div + out_vec * frame_depth
+                frame_segs.append(geo.LineCurve(frame_start, frame_end))
+
+        if len(pts_from_seg) >= 2:
+            wall_segs.append(geo.LineCurve(pts_from_seg[-1], seg.PointAtEnd))
+
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
+
+
+class BottomFacadeType3(BaseFacadeType):
+    """저층부 파사드 타입 3 - 대칭 프레임과 짧은 창호"""
+
+    def generate(self, seg: geo.Curve, extrude_height: float) -> Optional[Facade]:
+        pts_from_seg = utils.get_pts_by_length(
+            seg, self.pattern_length * 0.75, include_start=True
+        )
+        if not pts_from_seg or len(pts_from_seg) < 2:
+            return None
+
+        glass_segs: list[geo.Curve] = []
+        wall_segs: list[geo.Curve] = []
+        frame_segs: list[geo.Curve] = []
+
+        for pt, next_pt in zip(pts_from_seg, pts_from_seg[1:]):
+            vector = utils.get_vector_from_pts(pt, next_pt)
+            if hasattr(vector, "IsZero") and vector.IsZero:
+                continue
+            vector.Unitize()
+
+            center = pt + vector * (self.pattern_length * 0.5)
+            glass_start = center - vector * (self.pattern_length * 0.15)
+            glass_end = center + vector * (self.pattern_length * 0.15)
+
+            wall_segs.append(geo.LineCurve(pt, glass_start))
+            glass_segs.append(geo.LineCurve(glass_start, glass_end))
+            wall_segs.append(geo.LineCurve(glass_end, next_pt))
+
+            out_vec = utils.get_outside_perp_vec_from_pt(center, self.building_curve)
+            if out_vec is not None:
+                frame_depth = self.pattern_depth * 1.4
+                left_frame_start = glass_start
+                left_frame_end = glass_start + out_vec * frame_depth
+                right_frame_start = glass_end
+                right_frame_end = glass_end + out_vec * frame_depth
+                frame_segs.append(geo.LineCurve(left_frame_start, left_frame_end))
+                frame_segs.append(geo.LineCurve(right_frame_start, right_frame_end))
+
+        if len(pts_from_seg) >= 2:
+            wall_segs.append(geo.LineCurve(pts_from_seg[-1], seg.PointAtEnd))
+
+        return self._extrude_to_facade(
+            glass_segs, wall_segs, frame_segs, extrude_height
+        )
+
+
 class FacadeTypeRegistry:
     """파사드 타입 레지스트리 - 팩토리 패턴"""
 
@@ -581,4 +711,34 @@ class FacadeTypeRegistry:
     @classmethod
     def get_available_types(cls) -> list[int]:
         """사용 가능한 파사드 타입 번호 목록을 반환"""
+        return list(cls._facade_types.keys())
+
+
+class BottomFacadeTypeRegistry:
+    """저층부 전용 파사드 타입 레지스트리"""
+
+    _facade_types = {
+        1: BottomFacadeType1,
+        2: BottomFacadeType2,
+        3: BottomFacadeType3,
+    }
+
+    @classmethod
+    def create_facade_type(
+        cls,
+        type_num: int,
+        pattern_length: float,
+        pattern_depth: float,
+        pattern_ratio: float,
+        building_curve: geo.Curve,
+    ) -> Optional[BaseFacadeType]:
+        facade_class = cls._facade_types.get(type_num)
+        if facade_class:
+            return facade_class(
+                pattern_length, pattern_depth, pattern_ratio, building_curve
+            )
+        return None
+
+    @classmethod
+    def get_available_types(cls) -> list[int]:
         return list(cls._facade_types.keys())

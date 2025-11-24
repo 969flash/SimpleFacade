@@ -126,6 +126,7 @@ if __name__ == "__main__" or "building_breps" in globals():
     base = fg.FGInputs.from_globals(globals())
     variation_factor = float(globals().get("variation_factor", 0.0))
     pattern_types = globals().get("pattern_types", None)
+    slab_height = globals().get("slab_height", None)
 
     # 빌딩별 FGInputs 확장 및 패턴 타입 정규화
     per_bldg_inputs = FGInputsExpander.expand(

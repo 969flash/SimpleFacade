@@ -10,6 +10,7 @@ import Rhino  # type: ignore
 import utils
 import facade_plan
 import importlib
+import random
 from dataclasses import dataclass
 
 # 모듈 새로고침
@@ -117,12 +118,35 @@ class FacadeGenerator:
             self.building_curve,
         )
 
+        use_bottom_facade = self.building_floor >= 4
+        bottom_floor_span = 0
+        bottom_base_facade: Optional[Facade] = None
+        if use_bottom_facade:
+            bottom_type = random.choice(
+                facade_plan.BottomFacadeTypeRegistry.get_available_types()
+            )
+            bottom_floor_span = random.randint(1, 2)
+            bottom_floor_span = min(bottom_floor_span, self.building_floor)
+            bottom_obj = facade_plan.BottomFacadeTypeRegistry.create_facade_type(
+                bottom_type,
+                self.pattern_length,
+                self.pattern_depth,
+                self.pattern_ratio,
+                self.building_curve,
+            )
+        else:
+            bottom_obj = None
+
         # 기준층(0층) 파사드/슬래브를 한 번만 생성
         base_floor_height = min(self.floor_height, self.building_height)
         facade_height = base_floor_height - self.slab_height
         base_facade = self._generate_base_floor(
             building_segs, facade_type_obj, facade_height
         )
+        if bottom_obj is not None:
+            bottom_base_facade = self._generate_base_floor(
+                building_segs, bottom_obj, facade_height
+            )
 
         # bake_block: 블록 정의 1개 생성 후 층별 인스턴스 배치
         if self.bake_block:
@@ -135,7 +159,10 @@ class FacadeGenerator:
             base_z = floor * self.floor_height
             if base_z >= self.building_height:
                 break
-            moved = self._move_facade(base_facade, geo.Vector3d(0, 0, base_z))
+            template = base_facade
+            if bottom_base_facade and floor < bottom_floor_span:
+                template = bottom_base_facade
+            moved = self._move_facade(template, geo.Vector3d(0, 0, base_z))
             floor_facades.append(moved)
 
         # 디버그 출력은 라이브러리 모듈에서는 생략
